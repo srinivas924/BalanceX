@@ -17,6 +17,9 @@
 //    "Forward"  = rolling toward the FRONT mark.
 //    "Left"     = the robot's left when you stand behind it, facing the FRONT mark.
 //    "Angle"    = how far the robot leans. POSITIVE = leaning toward the FRONT.
+//
+//  This robot: 12 V geared DC motors, 300 rpm, 1.4-1.5 A stall, no encoders (yet);
+//              70 mm x 40 mm wheels; MPU6050 mounted flat; 3S LiPo; L298N driver.
 // =====================================================================================
 #pragma once
 #include <stdint.h>
@@ -57,7 +60,7 @@ constexpr uint32_t SERIAL_BAUD = 115200;   // Serial Monitor / Plotter must use 
 //     iPhones cannot use Bluetooth Classic serial - set 0 if you do not need it.
 // 0 = USB only (smaller program, faster upload).
 #define USE_BLUETOOTH 1
-#define BT_DEVICE_NAME "BalanceX"
+#define BT_DEVICE_NAME "BalanceX"   // two robots? give each its own name, e.g. "BalanceX-1"
 
 constexpr uint32_t TELEMETRY_PERIOD_MS = 50;   // [TUNE] print angle/output every 50 ms (20 Hz)
 constexpr uint8_t  TELEMETRY_AT_BOOT   = 1;    // 0 = off, 1 = angle/target/output, 2 = + P/I/D terms
@@ -106,6 +109,10 @@ constexpr float    GYRO_CALIB_MAX_SPREAD_DPS = 2.0f;  // if readings vary more t
 //   Example B - board standing vertical, chip facing the front, Y arrow up:
 //        UP = 1 (Y), +1      FWD = 2 (Z), +1
 //
+// THIS ROBOT: the MPU6050 is mounted FLAT, so UP is the Z axis (+1 if the chip side faces
+// up, -1 if the board is upside down). FWD is X or Y, depending on which printed arrow
+// points to the front mark - confirm both with "sensor" mode before the first balance.
+//
 // The gyro axis (the one parallel to the wheel axle) and its sign are worked out
 // automatically from these two, so they can never disagree with each other.
 constexpr int IMU_UP_AXIS  = 2;   // [CHECK]
@@ -131,8 +138,8 @@ constexpr float COMP_FILTER_ALPHA = 0.99f;     // [TUNE] (live: alpha) range 0.9
 //   output = KP*error + KI*sum(error*dt) + KD*tiltRate     (PWM counts, -255 .. +255)
 //   positive output = both wheels drive FORWARD, i.e. underneath the fall.
 //
-// Units: KP  = PWM per degree            e.g. 20 -> 2 deg of lean gives 40 PWM
-//        KI  = PWM per (degree*second)   e.g. 100 -> 1 deg held for 0.5 s adds 50 PWM
+// Units: KP  = PWM per degree            e.g. 30 -> 2 deg of lean gives 60 PWM
+//        KI  = PWM per (degree*second)   e.g. 250 -> 1 deg held for 0.4 s adds 100 PWM
 //        KD  = PWM per (degree/second)   (uses the gyro rate directly - no noisy differencing)
 //
 // Why KI is NOT zero here: a DC motor on PWM behaves like a SPEED control (more PWM ->
@@ -141,12 +148,13 @@ constexpr float COMP_FILTER_ALPHA = 0.99f;     // [TUNE] (live: alpha) range 0.9
 // With KI = 0 the robot typically balances for a moment and then runs away and falls.
 // (Found with the PC simulation in tests/host_test.cpp - see docs/ERROR_LOG.md.)
 //
-// The defaults below balanced a simulated robot of this size with 300 rpm motors.
-// Slower motors (e.g. 150 rpm) need roughly 2x all three gains. Symptom -> fix table:
-// docs/TUNING_GUIDE.md, step 6.
-constexpr float KP = 20.0f;             // [TUNE] (live: kp) typical range 10 .. 80
-constexpr float KI = 100.0f;            // [TUNE] (live: ki) typical range 50 .. 400
-constexpr float KD = 0.75f;             // [TUNE] (live: kd) typical range 0.25 .. 3.0
+// Starting values come from simulating THIS robot's motors and wheels (12 V, 300 rpm,
+// 1.45 A stall, 70 mm wheels) for robot weights of 1-2 kg and a centre of mass 6-15 cm
+// above the axle (ERROR_LOG DEV-11). The real robot will still need tuning: the simulation
+// has no gearbox backlash. Symptom -> fix table: docs/TUNING_GUIDE.md, step 7.
+constexpr float KP = 30.0f;             // [TUNE] (live: kp) typical range 10 .. 80
+constexpr float KI = 250.0f;            // [TUNE] (live: ki) typical range 50 .. 400
+constexpr float KD = 1.0f;              // [TUNE] (live: kd) typical range 0.25 .. 3.0
 constexpr float I_TERM_LIMIT = 150.0f;  // [TUNE] the I term can never add more than this many PWM
                                         //        (anti wind-up: stops it "storing up" huge values)
 

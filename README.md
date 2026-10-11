@@ -7,7 +7,8 @@ A two-wheeled robot that stands upright by itself. **Goal 1:** balance the bare 
 | Controller | ESP32-WROOM-32 DevKit |
 | Tilt sensor | MPU6050 (accelerometer + gyroscope, I2C) |
 | Motor driver | L298N dual H-bridge |
-| Motors | 2 × DC gear motors |
+| Motors | 2 × 12 V DC gear motors, 300 rpm, 1.4–1.5 A stall, no encoders (yet) |
+| Wheels | 70 mm × 40 mm |
 | Power | 3S LiPo (11.1 V) → switch → fuse → L298N + LM2596 (5 V for the ESP32) |
 
 Wiring: [docs/CONNECTIONS.md](docs/CONNECTIONS.md)
@@ -64,7 +65,8 @@ flowchart LR
 | Compiles, ESP32 core **2.0.17**, all warnings on | ✅ 0 errors, 0 warnings |
 | Compiles with `USE_BLUETOOTH 0` on both cores | ✅ |
 | Sensor sign maths, all 24 possible board mountings | ✅ `tests/host_test.cpp` |
-| Physics simulation with the default gains (guessed robot), with and without 2 kg | ✅ balances; reversed motors fall, as they should |
+| Physics simulation with your motor + wheel specs, default gains | ✅ balances; reversed motors fall, as they should |
+| Same, across unknown weight (1–2 kg), centre of mass (6–20 cm), battery charge, gearbox efficiency | ✅ 105 / 108 variants, all 81 with centre of mass ≤ 15 cm ([DEV-11](docs/ERROR_LOG.md#dev-11--re-simulation-with-the-real-motors-the-first-defaults-were-too-weak-for-70-mm-wheels)) |
 | **Running on the real robot** | ❌ **Not yet.** This is your step: follow TUNING_GUIDE and log results in ERROR_LOG Part D |
 
 Run the PC test (optional, any computer with g++):
@@ -73,14 +75,14 @@ Run the PC test (optional, any computer with g++):
 g++ -std=c++17 -O2 -o host_test tests/host_test.cpp && ./host_test
 ```
 
-The simulation uses **guessed** robot numbers (mass, motor speed and torque, height). It proves the signs and the controller logic, not the final gains.
+The simulation uses your motor and wheel specs. Weight, centre-of-mass height and gearbox friction are still guesses, and it has no gearbox backlash. It proves the signs and the controller logic and gives sensible starting gains; the real robot sets the final ones.
 
 ## Better ways to do this project
 
 In order of how much they would help, especially for the 2 kg goal:
 
-1. **Wheel encoders (biggest improvement).** Without them, the robot can only guess its wheel speed from the PWM it sends. That's why it tends to drift and needs the Stage-2 workaround. With encoders you get a proper speed/position loop around the angle loop: it stands still in one spot, does not run away, and you can later make it drive and turn. Many gear motors of this style (e.g. JGB37-520 with a 6-wire connector) already have Hall encoders. If yours do, it is only 4 extra wires (to free pins such as GPIO 32, 33, 34, 35) plus code using the ESP32's hardware pulse counter.
-2. **Replace the L298N.** It is an old bipolar-transistor driver that loses about 2–4 V of the 11.1 V battery as heat. That is roughly 20–35 % of the voltage your motors could get, and it hurts most when catching a heavy load. A MOSFET driver loses almost nothing. The right part depends on the motors' **stall current**: e.g. a Cytron MDD10A (dual, 10 A) for big motors, or two DRV8874/DRV8871 boards for smaller ones. It would use the same ESP32 pins with small code changes.
+1. **Wheel encoders (biggest improvement, you plan these anyway).** Without them, the robot can only guess its wheel speed from the PWM it sends. That's why it tends to drift and needs the Stage-2 workaround. With encoders you get a proper speed/position loop around the angle loop: it stands still in one spot, does not run away, and you can later make it drive and turn. Easiest route: the encoder version of the same motor (same size, shaft and rpm; usually a 6-wire connector), so the chassis and wheels stay the same. It is 4 extra wires (to free pins such as GPIO 32, 33, 34, 35) plus code using the ESP32's hardware pulse counter.
+2. **Replace the L298N before the 2 kg stage.** Your motors stall at 1.4–1.5 A, which is inside the L298N's 2 A per channel, so it is **fine for balancing the bare chassis**. But it is an old bipolar-transistor driver that loses about 2–4 V of the 11.1 V battery as heat: roughly 20–35 % of the voltage your motors could get, and it hurts most when catching a heavy load. A MOSFET driver loses almost nothing; for 1.5 A-stall motors, e.g. two DRV8871 or DRV8874 boards (one per motor, both comfortably above 1.5 A). Avoid the popular TB6612FNG here: it is rated only 1.2 A continuous. It would use the same ESP32 pins with small code changes.
 3. **Battery-voltage compensation.** As the LiPo drains from 12.6 V to about 10.5 V, the same PWM gives about 17 % less voltage, so the robot gets "lazier" during a session. A voltage divider to an ADC pin (GPIO 34/35) lets the code scale the PWM to keep the behaviour constant.
 4. **Check the gearbox backlash.** Wiggle each wheel by hand. Play in the gears is the classic cause of small, never-ending wobbles in DC-motor balancing robots. Low-backlash motors make tuning much easier.
 5. **Mount the sensor rigidly**, close to the robot's centre, away from the motors (vibration) and motor cables (I2C noise).

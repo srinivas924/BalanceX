@@ -10,7 +10,7 @@ Write down anything unexpected in [ERROR_LOG.md](ERROR_LOG.md), Part D.
 
 - **Wheels off the ground** (robot on a box, axle free) for steps 1–5.
 - Keep your hand near the battery switch. `stop` (Serial/Bluetooth) also cuts the motors.
-- Battery charged, low-voltage alarm plugged in, fuse fitted.
+- Battery charged, low-voltage alarm plugged in, fuse fitted. With two motors of 1.4–1.5 A stall current, the worst case is about 3 A for the motors plus a little for the electronics, so a fuse of about 5 A (slow-blow) fits, not 20 A. Your wires and switch must be rated for at least that.
 - First balance attempts: on the floor, in an open space, hands around the robot (not touching), and `maxpwm 150` to keep it gentle.
 - Mark the **FRONT** of the robot with tape. Every direction in this project is relative to that mark.
 
@@ -47,8 +47,8 @@ Type `sensor`. Ten lines per second appear:
 acc g X+0.02 Y-0.01 Z+0.99 | gyro dps X  +0.1 Y  -0.2 Z  +0.0 | gravity: +Z | accAngle   +1.2  rate   -0.2  ANGLE   +1.1
 ```
 
-1. **Stand the robot upright.** Read `gravity:`, e.g. `+Z` → `IMU_UP_AXIS = 2`, `IMU_UP_SIGN = +1`. (X = 0, Y = 1, Z = 2. A `-` means sign −1.)
-2. **Lay the robot on its BACK** (front mark facing the ceiling). Read `gravity:` again, e.g. `+X` → `IMU_FWD_AXIS = 0`, `IMU_FWD_SIGN = +1`.
+1. **Stand the robot upright.** Read `gravity:`, e.g. `+Z` → `IMU_UP_AXIS = 2`, `IMU_UP_SIGN = +1`. (X = 0, Y = 1, Z = 2. A `-` means sign −1.) Your board is mounted flat, so expect `+Z` (chip side up) or `-Z` (board upside down).
+2. **Lay the robot on its BACK** (front mark facing the ceiling). Read `gravity:` again, e.g. `+X` → `IMU_FWD_AXIS = 0`, `IMU_FWD_SIGN = +1`. For a flat board this will be X or Y: the printed arrow that points toward the front (`+`) or the back (`-`).
 3. Put those four values in `config.h` and upload again.
 4. Type `sensor` again and check:
    - Upright: `ANGLE` is near 0 (within a few degrees).
@@ -103,7 +103,7 @@ Type `stop`. Hold the robot by the top and find the angle where it feels weightl
 
 ## 7. First balance and tuning
 
-Start with the defaults: KP 20, KI 100, KD 0.75, SPEED_KP 0.02. For the first tries also type `maxpwm 150`.
+Start with the defaults: KP 30, KI 250, KD 1.0, SPEED_KP 0.02. They come from simulating your motors (12 V, 300 rpm, 1.45 A stall) and 70 mm wheels. For the first tries also type `maxpwm 150`.
 
 Type `go`, hold it upright on the floor, and let go gently once it starts.
 
@@ -123,7 +123,7 @@ Type `go`, hold it upright on the floor, and let go gently once it starts.
 | Turns in a circle | lower the stronger side's `*_MOTOR_GAIN` (config.h) |
 | Wheels slam to full power on small leans | `kp` or `maxpwm` down |
 
-**Simulation hint (guessed robot, ERROR_LOG DEV-04 to DEV-07):** with KI and SPEED_KP switched on, a wide range of KP (10–60) and KD (0.25–2) worked. With KI = 0 **and** SPEED_KP = 0, nothing worked; the robot balanced briefly and then ran away. So if it "almost works but runs away", the answer is usually KI / `skp` / `zero`, not KP. Slower motors (≈150 rpm) need roughly double all three gains.
+**Simulation hint (ERROR_LOG DEV-04 to DEV-11):** with KI and SPEED_KP switched on, a wide range of KP (10–60) and KD (0.25–2) worked. With KI = 0 **and** SPEED_KP = 0, nothing worked; the robot balanced briefly and then ran away. So if it "almost works but runs away", the answer is usually KI / `skp` / `zero`, not KP. A nearly empty battery made it fail more often, so tune on a charged battery.
 
 Once it stands: raise `maxpwm` back to 255, and push it gently to check it recovers.
 

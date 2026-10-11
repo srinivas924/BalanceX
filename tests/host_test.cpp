@@ -9,7 +9,9 @@
 //          the true tilt angle and tilt rate with the correct sign.
 //  Test 2: a rough physics simulation of a two-wheeled robot driven through the same
 //          filter / balance controller / motor-shaping code as the firmware (control.h),
-//          using the config.h values.
+//          using the config.h values and this robot's motor and wheel specs.
+//  Test 3: the same, across the things we have not measured yet (weight, height of the
+//          centre of mass, battery charge, gearbox efficiency).
 //          The robot parameters below are GUESSES - this proves the signs and the logic,
 //          not the final gains. Real tuning happens on the real robot.
 // =====================================================================================
@@ -125,18 +127,22 @@ static void testAllMountings() {
 }
 
 // ------------------------------------------------------------------ physics simulation
-struct Robot {                 // GUESSED parameters for a robot like the one in the photo
-  double bodyMass = 1.6;       // kg (chassis + battery + electronics, without wheels)
-  double comHeight = 0.12;     // m, centre of mass above the axle
-  double bodyInertia = 0.010;  // kg m^2 about the centre of mass
-  double wheelMass = 0.15;     // kg, both wheels
-  double wheelRadius = 0.0425; // m (85 mm wheels)
-  double stallTorque = 0.8;    // N m at the wheel, both motors together, at 12 V
+// Known from the team: 12 V gear motors, 300 rpm, 1.4-1.5 A stall current, 70 mm wheels.
+// Stall torque is derived from those: torque constant = 12 V / 31.4 rad/s = 0.38 N m/A,
+// x 1.45 A = 0.55 N m per motor if the gearbox were perfect; with ~70 % gearbox efficiency
+// about 0.39 N m per motor, 0.8 N m for both. Weight and heights are still GUESSES.
+struct Robot {
+  double bodyMass = 1.5;       // kg (chassis + battery + electronics, without wheels) - guess
+  double comHeight = 0.10;     // m, centre of mass above the axle - guess
+  double bodyInertia = 0.005;  // kg m^2 about the centre of mass (~ 20 cm tall body) - guess
+  double wheelMass = 0.15;     // kg, both wheels - guess
+  double wheelRadius = 0.035;  // m (70 mm wheels)
+  double stallTorque = 0.8;    // N m at the wheels, both motors together, at 12 V (see above)
   double noLoadSpeed = 31.4;   // rad/s at the wheel (300 rpm) at 12 V
-  double battery = 12.0;       // V
+  double battery = 11.1;       // V, 3S LiPo nominal (12.6 full, ~10.5 empty)
   double driverDrop = 2.0;     // V lost inside the L298N
-  double friction = 0.05;      // N m, gearbox friction (needs some minimum PWM)
-  double sensorHeight = 0.10;  // m, MPU6050 above the axle
+  double friction = 0.05;      // N m, gearbox friction (needs some minimum PWM) - guess
+  double sensorHeight = 0.08;  // m, MPU6050 above the axle (middle plate) - guess
 };
 
 struct SimResult { bool fell; double maxLateAngle; };
@@ -239,9 +245,10 @@ static void testClosedLoop() {
   std::printf("  default gains, no payload        : %s\n", ok ? "balanced" : "FELL / did not settle");
   CHECK(ok, "robot did not balance with the config.h gains");
 
+  // The 2 kg payload is a later stage, so this is information, not a pass/fail check.
   const bool okPayload = balances(rb, t, 2.0);
-  std::printf("  default gains, 2 kg at 0.25 m    : %s\n", okPayload ? "balanced" : "FELL / did not settle");
-  CHECK(okPayload, "robot did not balance with the 2 kg payload");
+  std::printf("  default gains, 2 kg at 0.25 m    : %s (later stage, not checked)\n",
+              okPayload ? "balanced" : "FELL / did not settle");
 
   // Motors driving the wrong way must fall quickly: proves the test can fail at all.
   Tuning wrong = t;
@@ -266,9 +273,43 @@ static void testClosedLoop() {
   printGainMap(rb, pdOnly, 0.0);
 }
 
+// The robot's weight and centre-of-mass height are not measured yet, and the battery
+// voltage and gearbox efficiency change. Try the config.h gains across all of them.
+static void testUnknowns() {
+  Tuning t;
+  t.minPwm = 40.0f;
+  std::printf("Test 3: config.h gains across the unknowns (weight, centre of mass, battery, gearbox)\n");
+  int ok = 0, total = 0, okLikely = 0, totalLikely = 0;
+  for (double mass : {1.0, 1.5, 2.0})
+    for (double com : {0.06, 0.10, 0.15, 0.20})
+      for (double stall : {0.55, 0.8, 1.1})       // gearbox efficiency ~50 / 70 / 100 %
+        for (double battery : {10.5, 11.1, 12.6}) {  // empty / nominal / full
+          Robot rb;
+          rb.bodyMass = mass;
+          rb.comHeight = com;
+          rb.bodyInertia = mass * 0.2 * 0.2 / 12.0;
+          rb.stallTorque = stall;
+          rb.friction = 0.05 * stall / 0.8;
+          rb.battery = battery;
+          const bool good = balances(rb, t, 0.0);
+          total++;
+          ok += good;
+          if (com <= 0.15) {   // the likely range for this chassis (battery on the bottom plate)
+            totalLikely++;
+            okLikely += good;
+          }
+          if (!good) std::printf("  did not balance: %.1f kg, centre of mass %.2f m, stall %.2f N m, %.1f V\n",
+                                 mass, com, stall, battery);
+        }
+  std::printf("  balanced %d / %d variants (%d / %d with centre of mass <= 15 cm)\n",
+              ok, total, okLikely, totalLikely);
+  CHECK(okLikely == totalLikely, "config.h gains failed for a likely robot variant");
+}
+
 int main() {
   testAllMountings();
   testClosedLoop();
+  testUnknowns();
   std::printf(failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d CHECK(S) FAILED\n", failures);
   return failures == 0 ? 0 : 1;
 }

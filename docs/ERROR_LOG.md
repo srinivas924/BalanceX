@@ -83,13 +83,14 @@ The firmware was compiled with **arduino-cli** for the board `ESP32 Dev Module` 
 | **Symptom** | With `MOTOR_MIN_PWM = 0`, the simulated robot (gearbox friction ≈ 6 % of stall torque) fell or kept wobbling. With 40 it balanced. |
 | **Root cause** | Small corrections (e.g. PWM 10) do not overcome gearbox friction, so the wheels do nothing until the lean is already large. |
 | **Fix** | Kept the dead-band compensation in `shapeCommand()` and made measuring `MOTOR_MIN_PWM` with the `ramp` test a required step in the tuning guide. |
+| **Re-checked with the real motor specs (DEV-11)** | The single middle-case robot now balanced even with `minpwm 0`, but across the 81 likely robot variants only 54 did, against 81 with `minpwm 40`. With a stiffer gearbox (friction 2–3× higher) **none** balanced without it, and 77–78 of 81 did with `minpwm 60`. Conclusion unchanged: measure it. |
 
 ### DEV-07 — Simulation: good gains depend strongly on the motors
 
 | | |
 |---|---|
 | **Observation** | We swept the guessed motor specs. Gains that worked for 300 rpm motors failed for 150 rpm motors. 150 rpm motors needed roughly 2× KP, KI and KD without payload, and about 4× with the 2 kg payload. |
-| **Consequence** | The defaults in `config.h` are only a starting point. The comment ranges were widened (KP 10–80, KI 50–400, KD 0.25–3) and the tuning guide explains how to scale. **We need the real motor specs (rpm, voltage, stall torque) to give better starting values.** |
+| **Consequence** | The defaults in `config.h` are only a starting point. The comment ranges were widened (KP 10–80, KI 50–400, KD 0.25–3) and the tuning guide explains how to scale. **We needed the real motor specs to give better starting values. They arrived later; see DEV-11.** |
 
 ### DEV-08 — Firmware and simulation could drift apart
 
@@ -116,6 +117,19 @@ The firmware was compiled with **arduino-cli** for the board `ESP32 Dev Module` 
 | **Concern** | The ESP32 `Wire` library also has an I2C *slave* `begin(uint8_t addr, int sda, int scl, uint32_t freq)`. We worried that `Wire.begin(sda, scl, freq)` with `uint8_t` pin numbers could pick it by mistake. |
 | **Check** | Compiled a test sketch on both cores and read `Wire.h`. The slave version needs **4** arguments, so a 3-argument call can only be the master version. |
 | **Result** | Not a problem. Pins are declared `int` anyway, because that is the type `Wire.begin()` expects. **Lesson:** check assumptions against the real library source before "fixing" them. |
+
+### DEV-11 — Re-simulation with the real motors: the first defaults were too weak for 70 mm wheels
+
+| | |
+|---|---|
+| **Stage** | After the team supplied the specs: 12 V, 300 rpm gear motors, 1.4–1.5 A stall current, 70 mm wheels, MPU6050 flat, no encoders |
+| **What we did** | Worked out the motor's torque from the specs: 12 V ÷ 31.4 rad/s = 0.38 N·m per amp, × 1.45 A = 0.55 N·m stall torque per motor with a perfect gearbox, so 0.55–1.1 N·m for both motors depending on gearbox efficiency. We put that and the 35 mm wheel radius into `tests/host_test.cpp`. The robot's weight and centre-of-mass height are still not measured, so we swept them: 1–2 kg, centre of mass 6–20 cm above the axle, battery 10.5 / 11.1 / 12.6 V, and three gearbox efficiencies. |
+| **Symptom** | The first defaults (KP 20, KI 100, KD 0.75) failed in 17 of 54 variants in the first sweep, mostly with a nearly empty battery (10.5 V) or a high centre of mass. |
+| **Root cause** | Smaller wheels mean less ground speed per PWM step, and a lower battery means less voltage per PWM step. Both reduce the effective loop gain, so the same KP/KI/KD "pushes" less. |
+| **Fix** | Compared six candidate gain sets on the same sweep and chose **KP 30, KI 250, KD 1.0**. It balanced 105 of 108 variants, and **all 81** with the centre of mass at 15 cm or lower (likely for this chassis, with the battery on the bottom plate). The 3 failures all have the centre of mass at 20 cm. It was also among the lowest KP/KD of the candidates, which matters because real gearbox backlash and noise (not in the simulation) punish high KP/KD. |
+| **Also seen** | Failures cluster at the lowest battery voltage. That supports tuning on a charged battery and, later, battery-voltage compensation (README, "Better ways" 3). |
+| **Verified** | `tests/host_test.cpp` Test 3 now checks the config.h gains across this whole sweep. |
+| **Caution** | Differences between neighbouring gain sets are within what a simplified model can tell apart. The real robot decides. |
 
 ---
 
@@ -225,5 +239,5 @@ Record every gain change during tuning. It shows *how* you reached the final val
 
 | Date | KP | KI | KD | SPEED_KP | setpoint | minpwm | Payload | What happened |
 |---|---|---|---|---|---|---|---|---|
-| | 20 | 100 | 0.75 | 0.02 | | | none | (defaults) |
+| | 30 | 250 | 1.0 | 0.02 | | | none | (defaults) |
 | | | | | | | | | |
