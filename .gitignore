@@ -1,0 +1,5 @@
+build/
+*.bin
+*.elf
+/host_test
+tests/host_test
