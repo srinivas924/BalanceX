@@ -6,7 +6,7 @@ This file records every problem we ran into while building BalanceX: what we saw
 
 | Part | What it contains | Status |
 |---|---|---|
-| [A. Errors found while writing the code](#a-errors-found-while-writing-the-code) | Real compiler messages and simulation failures from development, with evidence | Done (2026-10-11) |
+| [A. Errors found while writing the code](#a-errors-found-while-writing-the-code) | Real compiler messages and simulation failures from development, with evidence; DEV-12 to DEV-17: the Arduino Uno version | Done (2026-10-11, Uno 2026-10-26) |
 | [B. Problems designed out in advance](#b-problems-designed-out-in-advance) | Well-known balancing-robot / ESP32 pitfalls the code guards against, and where | Done |
 | [C. Troubleshooting table](#c-troubleshooting-table-symptom--cause--fix) | Symptom → likely cause → fix, for problems you may still meet | Reference |
 | [D. Hardware testing log](#d-hardware-testing-log--fill-this-in) | **Your** entries from testing the real robot, using the template | To fill in |
@@ -131,6 +131,65 @@ The firmware was compiled with **arduino-cli** for the board `ESP32 Dev Module` 
 | **Verified** | `tests/host_test.cpp` Test 3 now checks the config.h gains across this whole sweep. |
 | **Caution** | Differences between neighbouring gain sets are within what a simplified model can tell apart. The real robot decides. |
 
+### Arduino Uno version (2026-10-26)
+
+The team moved to an **Arduino Uno R3 with wheel encoders** (wiring: [CONNECTIONS_UNO.md](CONNECTIONS_UNO.md)) and reported two problems with their own sketch: **slow reaction** and **strong vibration**. DEV-12 to DEV-17 are what we found in that sketch and fixed in `firmware/BalanceX_Uno`. The team's calibration (pins, encoder counts 1325.1/rev, encoder/motor/IMU signs, minimum PWM 80 left / 100 right, start and fall limits) was kept unchanged.
+
+Evidence comes from `tests/uno_sim_test.cpp`, which runs the new controller **and a line-by-line port of the previous sketch** against the same physics model. Weight, centre-of-mass height, motor torque and gearbox play are guesses there, so the numbers show mechanisms, not exact predictions.
+
+### DEV-12 — Vibration: the motor PWM jumped between 0 and 80/100
+
+| | |
+|---|---|
+| **Symptom** | Strong, fast vibration around upright. |
+| **Root cause** | `outputToPWM()` gave 0 for an output up to 2 (= 0.25° of lean) and **80 (left) / 100 (right) PWM** just above it. Near upright the lean crosses ±0.25° all the time, so each motor was switched 0 → ±80/100 → 0 → ∓80/100, an on/off (relay) controller. The 80/100 values are what a wheel needs to *start* turning; a turning wheel needs less, so it was also over-pushed. The left/right difference (80 vs 100) also made the robot turn at small outputs. |
+| **How we found it** | Simulation trace of the previous sketch: the left PWM read −94, +87, −134, +90 in four consecutive 50 ms samples. |
+| **Fix** | `frictionCompensate()` in `balance.h`: adds 70 % of each motor's own start PWM (`FRICTION_COMP_PERCENT`), **in the direction the motor is already turning** (from its encoder), or, when it is still, in the commanded direction, blended in over the first 10 PWM. The output can no longer jump. A version that used the command's sign (simpler) was also tried: about as robust, but **18 vs 4 motor reversals per second** on average in the gain sweep, so the encoder-based one was kept. |
+| **Verified** | Test 2: largest PWM step for a tiny change of command is 0.5 (was 80/100). Test 3: 0.2 motor reversals/s (previous sketch: 6/s before it fell). |
+
+### DEV-13 — The control loop froze for ~9 ms every 100 ms (Serial printing)
+
+| | |
+|---|---|
+| **Symptom** | Part of the vibration: a regular jolt about 10 times a second. |
+| **Root cause** | The Uno's serial transmit buffer holds 64 characters. The debug line was about 150 characters every 100 ms. Once the buffer is full, `Serial.print()` **waits**: at 115200 baud each character takes 87 µs, so ~86 characters × 87 µs ≈ 7.5 ms, plus slow float formatting ≈ 9 ms. During that time the motors kept their old PWM and the 5 ms loop missed about two steps. |
+| **Fix** | `TxQueue` in `BalanceX_Uno.ino`: everything printed goes into a queue and is handed to `Serial` only as fast as it has room (`availableForWrite()`), so printing never waits. Telemetry is formatted right after a control step. Long texts (`?`, `c`) are only allowed while the motors are off. |
+| **Verified** | By calculation and code review; on the robot, `c` prints the longest control step and the number of late steps. |
+
+### DEV-14 — Slow reaction: low gain, a 180 PWM cap and a slow sensor read
+
+| | |
+|---|---|
+| **Symptom** | The robot reacted late and weakly. |
+| **Root cause** | (1) After the jump to 80/100, the output rose by only ~2.6 PWM per output unit, i.e. **KP ≈ 21 PWM per degree**, and was full at 5° lean. (2) `MAX_PWM = 180` left only ~70 % of the battery voltage for catching a fall. (3) The Adafruit library at the default 100 kHz I2C clock needs roughly 2 ms or more per reading. (4) The gyro rate was low-passed (`RATE_FILTER 0.4`, ≈ 7.5 ms delay) *before* being integrated into the angle, so the angle itself lagged. |
+| **Fix** | KP 50 / KD 1.6 in plain PWM units (no hidden mapping), `MAX_PWM 255`, direct register reads at 400 kHz (~0.4 ms, no library), the angle integrates the **unfiltered** gyro (only the KD term gets a light 40 Hz filter). |
+| **Verified** | Test 4: the defaults balanced, drove and recovered from a push in **64 / 64** simulated robot variants. Test 3: the previous sketch stayed up in 0 of the same 64 (on average it fell after 0.8 s), also with the Serial stall or its outer loop removed. The real robot may do better than the simulated one, whose weight and motors are guesses, but the mechanism is the same: a balance loop that is too weak and saturates early. |
+
+### DEV-15 — The two encoder loops of the previous sketch pushed in opposite directions
+
+| | |
+|---|---|
+| **Root cause** | With the same encoder and motor signs, the RPM speed loop (`targetAngleDeg = 0.2 × speedError`) and the wheel sync (`left − trim`, `right + trim`) assume **opposite** meanings of a positive PWM. If positive PWM drives forward (what the wheel sync assumes), "too slow" added forward PWM directly, without first leaning forward, which works against balance. If positive PWM drives backward, the wheel sync made the faster wheel faster. Either way one loop pushed the wrong way. |
+| **How we found it** | Writing every sign of the old sketch into one convention for the new firmware, then simulating both cases. |
+| **Fix** | One convention everywhere (`config.h` header: forward = encoders count up, + command = forward, + pitch = leaning forward). The team's sign values are kept; `BALANCE_SIGN` is folded into the angle and rate. The `t` test checks that a positive command makes each encoder count up; `i` checks the pitch sign. While balancing, a wheel that keeps turning against its own command stops the motors with `DIRECTION FAULT`. |
+| **Verified** | Test 5: with both motors and the sensor reversed (the second case), the direction check stopped the robot. On the robot: run `t` and `i` before the first balance (UNO_GUIDE step 3). |
+
+### DEV-16 — Not driving straight: speed sync cannot undo a turn
+
+| | |
+|---|---|
+| **Root cause** | The wheel sync only matched the two wheel *speeds* (±8 PWM). Any difference that had already happened (the right motor needs 100 PWM to start, the left 80) stayed as a heading error. |
+| **Fix** | Heading hold on the *distance* difference: `turn = HEADING_KP × (leftRev − rightRev) + HEADING_KD × (leftRpm − rightRpm)`, plus per-motor friction compensation (DEV-12) so the two motors start alike. |
+| **Verified** | Simulation with the 80/100 friction difference: heading change −0.3° over 24 s of driving. |
+
+### DEV-17 — Found while simulating: the encoders turn with the body
+
+| | |
+|---|---|
+| **Problem** | Our first simulation let the encoders measure the wheel's travel over the ground. Real gear-motor encoders sit on the motor shaft, so they count the wheel **relative to the body**, on the motor side of the gearbox play. When the body tilts, the encoder count changes although the robot has not moved (1° of tilt = 1/360 revolution). |
+| **Fix** | Simulation corrected. In the firmware, ground position = encoder + pitch / 360 and ground speed = encoder speed + pitch rate / 6 (`groundRev()`, `groundRpm()`). |
+| **Verified** | In the gain sweep, gain sets that passed every variant rose from 69 to 96 of 288 with this correction (sign-based friction), and it was kept for the final version. |
+
 ---
 
 ## B. Problems designed out in advance
@@ -155,6 +214,18 @@ These are classic failures of ESP32 / MPU6050 / balancing-robot projects. We did
 | P-14 | A long pause (e.g. calibration) makes `dt` huge and the filter jumps | `dt` capped at 50 ms | `loop()` |
 | P-15 | Robot jumps to life when switched on lying down | Starts only after being held within 3° of upright for 0.5 s (and not on its side, DEV-09); motors off beyond 35° | `runBalance()` |
 | P-16 | Tuned values are lost or "the code change does nothing" | Live changes are never saved to flash, so `config.h` is always the truth. `show` prints them ready to paste | `printSettings()` |
+
+**Arduino Uno version** (`firmware/BalanceX_Uno`):
+
+| ID | Known problem | What the code does | Where |
+|---|---|---|---|
+| U-01 | AVR `Wire` can hang forever on a disturbed I2C bus, with the motors still running | `Wire.setWireTimeout(3 ms, reset)`; any failed read stops the motors and the sensor is restarted every 0.2 s | `imuBegin()`, `controlStep()` |
+| U-02 | Anything else hangs the program with the motors on | Watchdog (250 ms): the board resets and the motor pins start LOW | `setup()`, `loop()` |
+| U-03 | Encoder interrupts slow down the loop at high wheel speed | Port-register reads (~0.2 µs) instead of `digitalRead()` (~4 µs); a compile-time check that `config.h` pins match | encoder ISRs |
+| U-04 | Calibration done while the robot was moving gives a wrong gyro offset | Gyro spread checked; repeated up to 5 times | `calibrate()` |
+| U-05 | A motor or encoder sign is wrong: the robot races off | `t` test, and the `DIRECTION FAULT` check while balancing | `runMotorTest()`, `Controller::control()` |
+| U-06 | Pushed far away, the position loop drags the robot back violently | Position error limited to 1 revolution; beyond that the reference moves along | `Controller::control()` |
+| U-07 | Commands need the right Serial Monitor line ending | A command also runs 80 ms after the last character | `pollSerial()` |
 
 ---
 
@@ -239,5 +310,12 @@ Record every gain change during tuning. It shows *how* you reached the final val
 
 | Date | KP | KI | KD | SPEED_KP | setpoint | minpwm | Payload | What happened |
 |---|---|---|---|---|---|---|---|---|
-| | 30 | 250 | 1.0 | 0.02 | | | none | (defaults) |
+| | 30 | 250 | 1.0 | 0.02 | | | none | (ESP32 defaults) |
+
+Arduino Uno version:
+
+| Date | KP | KD | SPEED_KP | POS_KP | friction % | forward RPM | What happened |
+|---|---|---|---|---|---|---|---|
+| | 50 | 1.6 | 0.09 | 3 | 70 | 10 | (defaults) |
+| | | | | | | | |
 | | | | | | | | | |

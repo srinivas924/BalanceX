@@ -2,6 +2,61 @@
 
 A two-wheeled robot that stands upright by itself. **Goal 1:** balance the bare chassis. **Goal 2:** balance with a 2 kg weight on the top tray.
 
+## Current version: Arduino Uno R3 with wheel encoders
+
+**Target:** balance steadily, then drive slowly forward in a straight line.
+
+| Part | Used |
+|---|---|
+| Controller | Arduino Uno R3 |
+| Tilt sensor | MPU6050 (I2C, A4/A5) |
+| Motor driver | L298N dual H-bridge (ENA D5, ENB D6) |
+| Motors | 2 × 12 V DC gear motors **with quadrature encoders** (1325.1 counts per wheel revolution) |
+| Wheels | 70 mm (from the earlier spec; only used to convert RPM to cm/s) |
+| Power | 3S LiPo (11.1 V) → fuse → switch → L298N + buck converter (5 V for the Uno) |
+
+- Firmware: [`firmware/BalanceX_Uno/`](firmware/BalanceX_Uno/) (open `BalanceX_Uno.ino`; no libraries to install)
+- Wiring: [docs/CONNECTIONS_UNO.md](docs/CONNECTIONS_UNO.md)
+- Bring-up, sign checks and tuning: [docs/UNO_GUIDE.md](docs/UNO_GUIDE.md) **← start here**
+- Why it was rewritten (vibration, slow reaction): [docs/ERROR_LOG.md](docs/ERROR_LOG.md) DEV-12 to DEV-17
+
+```mermaid
+flowchart LR
+  A[MPU6050<br/>accel X/Z + gyro Y] -->|200 Hz| B[tilt angle<br/>complementary filter]
+  E[wheel encoders] --> F[position + speed<br/>over the ground]
+  R[forward reference<br/>10 RPM] --> G
+  F --> G[outer loop<br/>-> target lean]
+  G --> C{"angle - target"}
+  B --> C
+  C --> D[balance PD<br/>KP, KD]
+  E --> H[straight-line loop<br/>left vs right travel]
+  D --> I[friction compensation<br/>per motor]
+  H --> I
+  I --> J[L298N -> motors]
+```
+
+What changed compared with the team's previous Uno sketch (details in the ERROR_LOG):
+
+| Problem | Cause | Now |
+|---|---|---|
+| Vibration | PWM jumped 0 ↔ 80/100 at 0.25° lean; Serial printing froze the loop ~9 ms every 100 ms | Smooth, encoder-based friction compensation; printing never waits |
+| Slow reaction | Effective KP ≈ 21, output capped at PWM 180, gyro filtered before integrating, 100 kHz sensor reads | KP 50 / KD 1.6 in plain PWM, cap 255, unfiltered gyro integration, 400 kHz register reads |
+| Drifting / not straight | Speed loop and wheel sync disagreed in sign; speed sync cannot undo a turn | One sign convention + `t`/`i` checks + direction-fault stop; heading hold on travelled distance |
+
+All calibration values of the previous sketch (pins, counts per revolution, encoder/motor/IMU signs, minimum PWM 80/100, start/fall limits) are kept in `config.h`.
+
+Run the PC simulation (optional, any computer with g++): it runs the Uno controller against a physics model of the robot, compares it with the previous sketch, and sweeps 64 variants of the unmeasured values (weight, height, motors, gearbox play, battery, calibration error).
+
+```
+g++ -std=c++17 -O2 -o uno_sim_test tests/uno_sim_test.cpp && ./uno_sim_test
+```
+
+The Uno firmware type-checks without warnings against Arduino stand-in headers (gnu++11, as the Arduino IDE uses). It has **not** yet been compiled with the real AVR toolchain or run on the robot: upload it, then follow UNO_GUIDE step 3 before the first balance.
+
+---
+
+## Earlier version: ESP32 without encoders
+
 | Part | Used |
 |---|---|
 | Controller | ESP32-WROOM-32 DevKit |
@@ -16,21 +71,28 @@ Wiring: [docs/CONNECTIONS.md](docs/CONNECTIONS.md)
 ## Folder layout
 
 ```
-firmware/BalanceX/      Arduino sketch (open BalanceX.ino; the .h files appear as tabs)
+firmware/BalanceX_Uno/  Arduino Uno sketch (current version, with encoders)
+  BalanceX_Uno.ino      hardware: MPU6050, encoders, L298N, serial commands, telemetry
+  config.h              ALL pins, your calibration and the tuning values  <-- the file you edit
+  balance.h             the controller (angle, outer loop, balance, straight line, safety)
+firmware/BalanceX/      ESP32 sketch (earlier version, no encoders)
   BalanceX.ino          setup(), loop(), modes, safety, serial/Bluetooth commands
-  config.h              ALL pins and tunable values  <-- the file you edit
+  config.h              ALL pins and tunable values
   control.h             tilt maths, complementary filter, PID, balance controller
   imu.h                 MPU6050 driver (registers, no library needed)
   motors.h              L298N driver (ESP32 core 2.x and 3.x)
 docs/
-  TUNING_GUIDE.md       step-by-step bring-up and tuning   <-- start here
+  UNO_GUIDE.md          Uno: bring-up, sign checks, tuning   <-- start here
+  CONNECTIONS_UNO.md    Uno wiring
+  TUNING_GUIDE.md       ESP32: step-by-step bring-up and tuning
   ERROR_LOG.md          every error we hit, cause and fix (+ template for hardware testing)
-  CONNECTIONS.md        wiring list
+  CONNECTIONS.md        ESP32 wiring
 tests/
-  host_test.cpp         optional PC test: sensor sign maths + physics simulation
+  uno_sim_test.cpp      Uno controller: physics simulation, old vs new, 64 variants, safety
+  host_test.cpp         ESP32 controller: sensor sign maths + physics simulation
 ```
 
-## Quick start
+## Quick start (ESP32 version)
 
 1. Arduino IDE 2.x + **esp32 by Espressif** board package (tested on 2.0.17 and 3.3.12). No extra libraries needed.
 2. Open `firmware/BalanceX/BalanceX.ino`, select **ESP32 Dev Module**, upload.
@@ -39,7 +101,7 @@ tests/
 
 None of the numbers are fixed. Every gain, limit and filter value is in `config.h` with a comment explaining it. The main ones can also be changed live over USB or Bluetooth (`kp 25`, `zero`, …), then saved with `show` + copy/paste.
 
-## How it works
+## How it works (ESP32 version)
 
 ```mermaid
 flowchart LR
@@ -57,7 +119,7 @@ flowchart LR
 3. **Stage 2.** If the robot keeps rolling one way, the target angle is tilted the other way so it slows down ([DEV-05](docs/ERROR_LOG.md#dev-05--simulation-with-ki-added-it-still-ran-away-accelerometer-fooled-by-acceleration)).
 4. **Safety.** Motors start only after the robot is held upright for 0.5 s, stop beyond 35°, and stop at once if the sensor stops answering.
 
-## What has been verified (and what has not)
+## What has been verified (ESP32 version)
 
 | Check | Result |
 |---|---|
@@ -78,6 +140,8 @@ g++ -std=c++17 -O2 -o host_test tests/host_test.cpp && ./host_test
 The simulation uses your motor and wheel specs. Weight, centre-of-mass height and gearbox friction are still guesses, and it has no gearbox backlash. It proves the signs and the controller logic and gives sensible starting gains; the real robot sets the final ones.
 
 ## Better ways to do this project
+
+(Written for the ESP32 version. Item 1, wheel encoders, is done in the Uno version.)
 
 In order of how much they would help, especially for the 2 kg goal:
 

@@ -3,3 +3,5 @@ build/
 *.elf
 /host_test
 tests/host_test
+/uno_sim_test
+tests/uno_sim_test
